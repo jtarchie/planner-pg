@@ -29,11 +29,14 @@ module Planner
         Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
       end
       result = Planner.conn.exec(<<~SQL)
+        WITH pending_tasks AS (
           SELECT
-            DISTINCT ON (index) name
+            DISTINCT ON (index) name, state
           FROM tasks
-          WHERE state = 'unstarted'
-          ORDER BY tasks.index ASC
+          WHERE state IN ('unstarted', 'pending')
+          ORDER BY tasks.index ASC, tasks.state DESC
+        )
+        SELECT name FROM pending_tasks WHERE state = 'unstarted';
       SQL
       result.collect{|r| r['name']}.collect(&:to_sym)
     end
@@ -66,10 +69,10 @@ module Planner
     def failure(&block); end
     def try(&block); end
     def serial(&block)
-      BuildPlan.new(index: @index+=@inc, &block).plan
+      BuildPlan.new(index: @index+=1, &block).plan
     end
     def parallel(&block)
-      BuildPlan.new(index: @index+=@inc, inc: 1,  &block).plan
+      BuildPlan.new(index: @index+=1, inc: 1,  &block).plan
     end
   end
 
