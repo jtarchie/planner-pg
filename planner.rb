@@ -14,7 +14,7 @@ module Planner
 
   def self.migrate!
     conn.exec(<<~SQL)
-      CREATE TYPE state AS ENUM ('unstarted', 'success', 'pending', 'failed');
+      CREATE TYPE state AS ENUM ('failed', 'pending', 'unstarted', 'success');
       CREATE TABLE tasks (
         name TEXT NOT NULL,
         state state NOT NULL DEFAULT 'unstarted',
@@ -33,8 +33,8 @@ module Planner
           SELECT
             DISTINCT ON (index) name, state
           FROM tasks
-          WHERE state IN ('unstarted', 'pending')
-          ORDER BY tasks.index ASC, tasks.state DESC
+          WHERE state IN ('unstarted', 'pending', 'failed')
+          ORDER BY tasks.index ASC, tasks.state ASC
         )
         SELECT name FROM pending_tasks WHERE state = 'unstarted';
       SQL
@@ -45,7 +45,13 @@ module Planner
       states.each do |name, state|
         Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
       end
-      result = Planner.conn.exec('SELECT state FROM tasks LIMIT 1')
+      result = Planner.conn.exec(<<~SQL)
+        SELECT
+          state
+        FROM tasks
+        ORDER BY tasks.index ASC, tasks.state ASC
+        LIMIT 1
+      SQL
       result.first['state'].to_sym
     end
   end
