@@ -41,7 +41,10 @@ module Planner
       result.collect{|r| r['name']}.collect(&:to_sym)
     end
 
-    def state
+    def state(states = {})
+      states.each do |name, state|
+        Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+      end
       result = Planner.conn.exec('SELECT state FROM tasks LIMIT 1')
       result.first['state'].to_sym
     end
