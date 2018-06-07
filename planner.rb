@@ -78,7 +78,7 @@ module Planner
     def failure(&block); end
     def try(&block); end
     def serial(&block)
-      BuildPlan.new(index: @index+=1, &block).plan
+      BuildPlan.new(index: @index, &block).plan
     end
     def parallel(&block)
       BuildPlan.new(index: @index+=1, inc: 1,  &block).plan
