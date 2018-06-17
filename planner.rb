@@ -20,6 +20,24 @@ module Planner
         state state NOT NULL DEFAULT 'unstarted',
         index INTEGER NOT NULL
       );
+      CREATE OR REPLACE FUNCTION get_tasks_by_group() RETURNS SETOF tasks AS
+      $func$
+        DECLARE
+          r tasks%rowtype;
+        BEGIN
+          FOR r IN
+            SELECT
+              DISTINCT ON (index) name, state
+            FROM tasks
+            -- WHERE state IN ('unstarted', 'pending', 'failed')
+            ORDER BY tasks.index ASC, tasks.state ASC
+          LOOP
+            RETURN NEXT r;
+          END LOOP;
+          RETURN;
+        END
+      $func$
+      LANGUAGE plpgsql;
     SQL
   end
 
@@ -29,14 +47,7 @@ module Planner
         Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
       end
       result = Planner.conn.exec(<<~SQL)
-        WITH pending_tasks AS (
-          SELECT
-            DISTINCT ON (index) name, state
-          FROM tasks
-          WHERE state IN ('unstarted', 'pending', 'failed')
-          ORDER BY tasks.index ASC, tasks.state ASC
-        )
-        SELECT name FROM pending_tasks WHERE state = 'unstarted';
+        SELECT name FROM get_tasks_by_group() WHERE state = 'unstarted';
       SQL
       result.collect{|r| r['name']}.collect(&:to_sym)
     end
@@ -48,7 +59,7 @@ module Planner
       result = Planner.conn.exec(<<~SQL)
         SELECT
           state
-        FROM tasks
+        FROM get_tasks_by_group() AS tasks
         ORDER BY tasks.index ASC, tasks.state ASC
         LIMIT 1
       SQL
