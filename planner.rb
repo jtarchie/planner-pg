@@ -20,6 +20,22 @@ module Planner
         state state NOT NULL DEFAULT 'unstarted',
         index INTEGER NOT NULL
       );
+      CREATE OR REPLACE FUNCTION insert_serial(n TEXT) RETURNS void AS
+      $func$
+        BEGIN
+          INSERT INTO tasks (name, index) VALUES (n, (SELECT coalesce(max(index), 0) FROM tasks));
+        END;
+      $func$
+      LANGUAGE plpgsql;
+
+      CREATE OR REPLACE FUNCTION insert_parallel(n TEXT) RETURNS void AS
+      $func$
+        BEGIN
+          INSERT INTO tasks (name, index) VALUES (n, (SELECT coalesce(max(index), 0) FROM tasks) + 1);
+        END
+      $func$
+      LANGUAGE plpgsql;
+
       CREATE OR REPLACE FUNCTION get_tasks_by_group() RETURNS SETOF tasks AS
       $func$
         DECLARE
@@ -29,7 +45,6 @@ module Planner
             SELECT
               DISTINCT ON (index) name, state
             FROM tasks
-            -- WHERE state IN ('unstarted', 'pending', 'failed')
             ORDER BY tasks.index ASC, tasks.state ASC
           LOOP
             RETURN NEXT r;
@@ -43,27 +58,58 @@ module Planner
 
   class Plan
     def next(states = {})
-      states.each do |name, state|
-        Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+      Planner.conn.transaction do
+        states.each do |name, state|
+          Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+        end
+        result = Planner.conn.exec(<<~SQL)
+          SELECT
+              DISTINCT ON (index) name, state
+            FROM tasks
+            WHERE tasks.state = 'unstarted'
+            ORDER BY tasks.index ASC ;
+        SQL
+        debug
+        debug(<<~SQL)
+        SELECT
+              DISTINCT ON (index) name, state
+            FROM tasks
+            WHERE tasks.state = 'unstarted'
+            ORDER BY tasks.index ASC ;
+        SQL
+        return result.collect{|r| r['name']}.collect(&:to_sym)
       end
-      result = Planner.conn.exec(<<~SQL)
-        SELECT name FROM get_tasks_by_group() WHERE state = 'unstarted';
-      SQL
-      result.collect{|r| r['name']}.collect(&:to_sym)
     end
 
     def state(states = {})
-      states.each do |name, state|
-        Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+      Planner.conn.transaction do
+        states.each do |name, state|
+          Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+        end
+        states.each do |name, state|
+          Planner.conn.exec('UPDATE tasks SET state = $1 WHERE name = $2', [state, name])
+        end
+        result = Planner.conn.exec(<<~SQL)
+          SELECT
+            state
+          FROM get_tasks_by_group() AS tasks
+          ORDER BY tasks.index ASC, array_position(
+           array[
+             'unstarted', 'pending', 'failed', 'success'
+           ]::state[]
+          , tasks.state)
+          LIMIT 1
+        SQL
+        debug
+        return result.first['state'].to_sym
       end
-      result = Planner.conn.exec(<<~SQL)
-        SELECT
-          state
-        FROM get_tasks_by_group() AS tasks
-        ORDER BY tasks.index ASC, tasks.state ASC
-        LIMIT 1
-      SQL
-      result.first['state'].to_sym
+    end
+
+    private
+
+    def debug(sql = "SELECT * FROM tasks")
+      results = Planner.conn.exec(sql)
+      $logger.info "results: #{results.to_a}"
     end
   end
 
@@ -74,12 +120,6 @@ module Planner
       self.instance_eval &block
     end
 
-    def task(name)
-      @index+=@inc
-      $logger.info "name: #{name}, index: #{@index}"
-      Planner.conn.exec('INSERT INTO tasks (name, index) VALUES ($1, $2)', [name, @index])
-    end
-
     def plan
       Plan.new
     end
@@ -88,19 +128,35 @@ module Planner
     def finally(&block); end
     def failure(&block); end
     def try(&block); end
+
     def serial(&block)
-      BuildPlan.new(index: @index, &block).plan
+      SerialBuildPlan.new(&block).plan
     end
+
     def parallel(&block)
-      BuildPlan.new(index: @index+=1, inc: 1,  &block).plan
+      ParallelBuildPlan.new(&block).plan
     end
   end
 
   def serial(&block)
-    BuildPlan.new(&block).plan
+    SerialBuildPlan.new(&block).plan
   end
 
   def parallel(&block)
-    BuildPlan.new(inc: 1, &block).plan
+    ParallelBuildPlan.new(inc: 1, &block).plan
+  end
+
+  class SerialBuildPlan < BuildPlan
+    def task(name)
+      $logger.info "name: #{name}"
+      Planner.conn.exec('SELECT insert_serial($1);', [name])
+    end
+  end
+
+  class ParallelBuildPlan < BuildPlan
+    def task(name)
+      $logger.info "name: #{name}"
+      Planner.conn.exec('SELECT insert_parallel($1);', [name])
+    end
   end
 end
